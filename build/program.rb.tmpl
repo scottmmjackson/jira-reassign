@@ -1,0 +1,49 @@
+# typed: false
+# frozen_string_literal: true
+
+class JiraReassign < Formula
+  desc "Reassign Jira tickets by role field (reviewer, responsible engineer, etc.)"
+  homepage "https://github.com/scottmmjackson/jira-reassign"
+  version "${VERSION}"
+
+  on_macos do
+    if Hardware::CPU.intel?
+      url "${X86_DARWIN_RELEASE_URL}"
+      sha256 "${X86_DARWIN_RELEASE_SHA}"
+
+      def install
+        bin.install "jira-reassign"
+      end
+    end
+    if Hardware::CPU.arm?
+      url "${ARM64_DARWIN_RELEASE_URL}"
+      sha256 "${ARM64_DARWIN_RELEASE_SHA}"
+
+      def install
+        bin.install "jira-reassign"
+      end
+    end
+  end
+  on_linux do
+    if Hardware::CPU.arm? && Hardware::CPU.is_64_bit?
+      url "${ARM64_LINUX_RELEASE_URL}"
+      sha256 "${ARM64_LINUX_RELEASE_SHA}"
+
+      def install
+        bin.install "jira-reassign"
+      end
+    end
+    if Hardware::CPU.intel?
+      url "${X86_LINUX_RELEASE_URL}"
+      sha256 "${X86_LINUX_RELEASE_SHA}"
+
+      def install
+        bin.install "jira-reassign"
+      end
+    end
+  end
+
+  test do
+    system "#{bin}/jira-reassign --version"
+  end
+end

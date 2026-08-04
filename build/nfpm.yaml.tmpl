@@ -1,0 +1,19 @@
+# nfpm example configuration file
+#
+# check https://nfpm.goreleaser.com/configuration for detailed usage
+#
+name: "jira-reassign"
+arch: "${ARCH}"
+platform: "${PLATFORM}"
+version: "${VERSION}"
+section: "default"
+priority: "extra"
+provides:
+  - "jira-reassign"
+maintainer: "Scott Jackson <scottmmjackson@gmail.com>"
+description: Reassign Jira tickets by role field (reviewer, responsible engineer, etc.)
+homepage: "https://github.com/scottmmjackson/jira-reassign"
+license: "BSD 3.0"
+contents:
+- src: ${JIRA_REASSIGN_BINARY}
+  dst: ${BIND_FILE}
