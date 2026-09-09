@@ -19,13 +19,16 @@ enum Commands {
     Init,
     /// List available Jira fields, optionally scoped to a project (e.g. `list-fields COMMON`)
     ListFields { project: Option<String> },
-    /// Assign the issue's assignee to yourself, only if it's currently unassigned
-    AssignMe { ticket: String },
-    /// Show who is currently assigned, and in what configured role(s)
-    Show { ticket: String },
-    /// `jira-reassign <field> <ticket>` — reassign the ticket to whoever currently holds
+    /// Assign the issue's assignee to yourself, only if it's currently unassigned.
+    /// `ticket` may be omitted if `branch_ticket_regex` is configured.
+    AssignMe { ticket: Option<String> },
+    /// Show who is currently assigned, and in what configured role(s).
+    /// `ticket` may be omitted if `branch_ticket_regex` is configured.
+    Show { ticket: Option<String> },
+    /// `jira-reassign <field> [ticket]` — reassign the ticket to whoever currently holds
     /// that role field (from config), e.g. `jira-reassign reviewer COMMON-807` hands
-    /// COMMON-807 to its current reviewer
+    /// COMMON-807 to its current reviewer. `ticket` may be omitted if `branch_ticket_regex`
+    /// is configured.
     #[command(external_subcommand)]
     Field(Vec<String>),
 }
@@ -39,8 +42,8 @@ fn main() {
             Ok(())
         }
         Commands::ListFields { project } => cmd_list_fields(project),
-        Commands::AssignMe { ticket } => cmd_assign_me(&ticket),
-        Commands::Show { ticket } => cmd_show(&ticket),
+        Commands::AssignMe { ticket } => cmd_assign_me(ticket.as_deref()),
+        Commands::Show { ticket } => cmd_show(ticket.as_deref()),
         Commands::Field(args) => cmd_reassign_by_role(&args),
     };
 

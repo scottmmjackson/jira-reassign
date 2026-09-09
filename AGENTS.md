@@ -54,12 +54,22 @@ subcommands for new roles; that defeats the point.
   independent of everything else the tool needs. Note `resolve_current_user` is only used by
   `cmd_assign_me` — `cmd_reassign_by_role` never needs to know who's running the tool, since it
   reassigns to the role field's existing holder, not to the caller.
+- `<ticket>` is optional on every subcommand (`AssignMe`, `Show`, and the `Field` external
+  subcommand all take it as `Option<...>`). `resolve_ticket` in `src/lib.rs` fills it in from
+  the current git branch name (`git rev-parse --abbrev-ref HEAD`) when the CLI arg is omitted
+  and `config.branch_ticket_regex` is set — `None` on that config field means the feature is
+  off and a missing `<ticket>` is an error. An empty string enables it with
+  `DEFAULT_BRANCH_TICKET_REGEX`; a non-empty string is used as a custom regex. Extracted
+  ticket IDs are uppercased, since branch names are conventionally lowercase but Jira issue
+  keys are conventionally uppercase.
 
 ## Before committing
 
 - `cargo build` and `cargo clippy` should both be clean (no warnings).
-- There's no test suite yet (all commands hit live Jira). If you add one, prefer mocking the
-  HTTP layer over hitting a real Jira instance in CI.
+- `cargo test` covers the branch-name ticket extraction (`extract_ticket_from_branch`) by
+  mocking only the regex/string logic, not live Jira. Everything else still has no test
+  suite (all other commands hit live Jira) — if you add more, prefer mocking the HTTP layer
+  over hitting a real Jira instance in CI.
 
 ## Releasing
 

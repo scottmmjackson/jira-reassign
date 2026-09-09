@@ -1,5 +1,6 @@
-use base64::{engine::general_purpose::STANDARD, Engine};
+use base64::{Engine, engine::general_purpose::STANDARD};
 use directories::ProjectDirs;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -11,6 +12,11 @@ const APP_QUALIFIER: &str = "com";
 const APP_ORG: &str = "scottmmjackson";
 const APP_NAME: &str = "jira-reassign";
 
+/// Sane default for `branch_ticket_regex`: matches a Jira-style issue key (letters, then
+/// `-`, then digits) anywhere in a branch name, e.g. `feature/COMMON-807-fix-thing` or
+/// `common-807-fix-thing`. Case-insensitive since branch names are conventionally lowercase.
+pub const DEFAULT_BRANCH_TICKET_REGEX: &str = r"(?i)\b([a-z][a-z0-9]+-[0-9]+)\b";
+
 /// Config file schema. `fields` maps a role name (e.g. "reviewer",
 /// "responsible-engineer") to the Jira custom field ID (e.g. "customfield_10101")
 /// that holds that role's assignee. Use `list-fields` to discover field IDs.
@@ -18,6 +24,13 @@ const APP_NAME: &str = "jira-reassign";
 /// `account_id` is optional. It's needed as a fallback for scoped Atlassian API tokens
 /// that lack user-profile read access, since those can't call `/myself` to look up
 /// "you" — see `resolve_current_user`.
+///
+/// `branch_ticket_regex` is optional and off by default: when the field is absent, the
+/// ticket ID must always be passed explicitly on the command line. Setting it enables
+/// extracting the ticket ID from the current git branch name whenever the ticket argument
+/// is omitted. An empty string enables the feature using [`DEFAULT_BRANCH_TICKET_REGEX`];
+/// a non-empty string is used as a custom regex instead. The first capture group is used
+/// as the ticket ID (the whole match if the regex has no capture group).
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ConfigFile {
     pub base_url: String,
@@ -25,6 +38,8 @@ pub struct ConfigFile {
     pub api_token: String, // pragma: allowlist-secret
     #[serde(default)]
     pub account_id: Option<String>,
+    #[serde(default)]
+    pub branch_ticket_regex: Option<String>,
     pub fields: HashMap<String, String>,
 }
 
@@ -73,6 +88,7 @@ pub fn init_config() {
         email: "you@yourcompany.com".to_string(),
         api_token: "your-api-token".to_string(), // pragma: allowlist-secret
         account_id: None,
+        branch_ticket_regex: None,
         fields,
     };
 
@@ -86,6 +102,10 @@ pub fn init_config() {
     println!(
         "If your API token is a *scoped* token without user-profile read access, also set \
         \"account_id\" — see the README for how to find yours."
+    );
+    println!(
+        "To extract ticket IDs from your current git branch name instead of typing them \
+        every time, add \"branch_ticket_regex\": \"\" (or a custom regex) — see the README."
     );
 }
 
@@ -230,6 +250,60 @@ pub fn resolve_current_user(
     })
 }
 
+/// Returns the name of the current git branch (e.g. via `git rev-parse --abbrev-ref HEAD`).
+fn current_branch_name() -> Result<String, Box<dyn Error>> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .output()
+        .map_err(|e| format!("Failed to run `git rev-parse --abbrev-ref HEAD`: {}", e))?;
+    if !output.status.success() {
+        return Err(format!(
+            "`git rev-parse --abbrev-ref HEAD` failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )
+        .into());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// Applies `pattern` to `branch` and returns the extracted ticket ID (the first capture
+/// group, or the whole match if the regex has none), uppercased since Jira issue keys are
+/// conventionally uppercase but branch names are often lowercase.
+fn extract_ticket_from_branch(branch: &str, pattern: &str) -> Result<String, Box<dyn Error>> {
+    let re = Regex::new(pattern)
+        .map_err(|e| format!("Invalid branch_ticket_regex '{}': {}", pattern, e))?;
+    let caps = re.captures(branch).ok_or_else(|| {
+        format!(
+            "Could not extract a ticket ID from branch '{}' using pattern '{}'.",
+            branch, pattern
+        )
+    })?;
+    let matched = caps.get(1).or_else(|| caps.get(0)).unwrap().as_str();
+    Ok(matched.to_uppercase())
+}
+
+/// Resolves the ticket ID to operate on: the explicit CLI argument when given, otherwise
+/// (if `config.branch_ticket_regex` is set) extracted from the current git branch name.
+pub fn resolve_ticket(
+    config: &ConfigFile,
+    ticket_arg: Option<&str>,
+) -> Result<String, Box<dyn Error>> {
+    if let Some(t) = ticket_arg {
+        return Ok(t.to_string());
+    }
+    let pattern = config.branch_ticket_regex.as_deref().ok_or(
+        "No ticket specified. Either pass one explicitly, or set \"branch_ticket_regex\" in \
+        your config to extract it from the current git branch name.",
+    )?;
+    let pattern = if pattern.is_empty() {
+        DEFAULT_BRANCH_TICKET_REGEX
+    } else {
+        pattern
+    };
+    let branch = current_branch_name()?;
+    extract_ticket_from_branch(&branch, pattern)
+}
+
 pub fn get_issue_fields(
     client: &JiraClient,
     ticket: &str,
@@ -363,11 +437,12 @@ pub fn cmd_list_fields(project: Option<String>) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-pub fn cmd_assign_me(ticket: &str) -> Result<(), Box<dyn Error>> {
+pub fn cmd_assign_me(ticket_arg: Option<&str>) -> Result<(), Box<dyn Error>> {
     let config = load_config();
+    let ticket = resolve_ticket(&config, ticket_arg)?;
     let client = JiraClient::new(&config)?;
 
-    let value = get_issue_fields(&client, ticket, &["assignee"])?;
+    let value = get_issue_fields(&client, &ticket, &["assignee"])?;
     let fields = value.get("fields").cloned().unwrap_or(Value::Null);
     if let Some(u) = extract_user(&fields, "assignee") {
         println!(
@@ -378,7 +453,7 @@ pub fn cmd_assign_me(ticket: &str) -> Result<(), Box<dyn Error>> {
     }
 
     let me = resolve_current_user(&client, &config)?;
-    set_user_field(&client, ticket, "assignee", &me.account_id)?;
+    set_user_field(&client, &ticket, "assignee", &me.account_id)?;
     println!(
         "Assigned {} to {} ({}).",
         ticket, me.display_name, me.account_id
@@ -386,8 +461,9 @@ pub fn cmd_assign_me(ticket: &str) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-pub fn cmd_show(ticket: &str) -> Result<(), Box<dyn Error>> {
+pub fn cmd_show(ticket_arg: Option<&str>) -> Result<(), Box<dyn Error>> {
     let config = load_config();
+    let ticket = resolve_ticket(&config, ticket_arg)?;
     let client = JiraClient::new(&config)?;
 
     let mut role_field_ids: Vec<(String, String)> = config
@@ -401,7 +477,7 @@ pub fn cmd_show(ticket: &str) -> Result<(), Box<dyn Error>> {
     field_ids.extend(role_field_ids.iter().map(|(_, fid)| fid.clone()));
     let field_ids_refs: Vec<&str> = field_ids.iter().map(|s| s.as_str()).collect();
 
-    let value = get_issue_fields(&client, ticket, &field_ids_refs)?;
+    let value = get_issue_fields(&client, &ticket, &field_ids_refs)?;
     let fields = value.get("fields").cloned().unwrap_or(Value::Null);
     let summary = fields
         .get("summary")
@@ -419,7 +495,12 @@ pub fn cmd_show(ticket: &str) -> Result<(), Box<dyn Error>> {
     for (role, fid) in &role_field_ids {
         let holder = extract_user(&fields, fid);
         match &holder {
-            Some(u) => println!("{}: {} ({})", role_label(role), u.display_name, u.account_id),
+            Some(u) => println!(
+                "{}: {} ({})",
+                role_label(role),
+                u.display_name,
+                u.account_id
+            ),
             None => println!("{}: (unassigned)", role_label(role)),
         }
         if let (Some(a), Some(h)) = (&assignee, &holder)
@@ -441,35 +522,35 @@ pub fn cmd_show(ticket: &str) -> Result<(), Box<dyn Error>> {
 }
 
 /// Reassigns a ticket's assignee to whoever currently holds the given role field, e.g.
-/// `jira-reassign reviewer COMMON-807` hands COMMON-807 to its current reviewer.
+/// `jira-reassign reviewer COMMON-807` hands COMMON-807 to its current reviewer. If
+/// `<ticket>` is omitted, it's extracted from the current git branch name when
+/// `branch_ticket_regex` is configured.
 pub fn cmd_reassign_by_role(args: &[String]) -> Result<(), Box<dyn Error>> {
-    let (role, ticket) = match args {
-        [role, ticket] => (role, ticket),
+    let (role, ticket_arg) = match args {
+        [role, ticket] => (role, Some(ticket.as_str())),
+        [role] => (role, None),
         _ => {
-            return Err("Usage: jira-reassign <field> <ticket>\n\
+            return Err("Usage: jira-reassign <field> [ticket]\n\
                 Where <field> is one of the roles configured in your config file \
                 (e.g. reviewer, responsible-engineer). This reassigns <ticket> to \
-                whoever currently holds that role."
-                .into())
+                whoever currently holds that role. <ticket> may be omitted if \
+                \"branch_ticket_regex\" is configured."
+                .into());
         }
     };
 
     let config = load_config();
+    let ticket = resolve_ticket(&config, ticket_arg)?;
     let field_id = config.fields.get(role).cloned().ok_or_else(|| {
         format!(
             "Unknown field role '{}'. Configured roles: {}",
             role,
-            config
-                .fields
-                .keys()
-                .cloned()
-                .collect::<Vec<_>>()
-                .join(", ")
+            config.fields.keys().cloned().collect::<Vec<_>>().join(", ")
         )
     })?;
 
     let client = JiraClient::new(&config)?;
-    let value = get_issue_fields(&client, ticket, &["assignee", &field_id])?;
+    let value = get_issue_fields(&client, &ticket, &["assignee", &field_id])?;
     let fields = value.get("fields").cloned().unwrap_or(Value::Null);
     let holder = extract_user(&fields, &field_id).ok_or_else(|| {
         format!(
@@ -490,7 +571,7 @@ pub fn cmd_reassign_by_role(args: &[String]) -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
 
-    set_user_field(&client, ticket, "assignee", &holder.account_id)?;
+    set_user_field(&client, &ticket, "assignee", &holder.account_id)?;
     println!(
         "Reassigned {} to {} ({}), the ticket's {}.",
         ticket,
@@ -499,4 +580,40 @@ pub fn cmd_reassign_by_role(args: &[String]) -> Result<(), Box<dyn Error>> {
         role_label(role)
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extracts_uppercase_ticket_from_branch() {
+        assert_eq!(
+            extract_ticket_from_branch("feature/COMMON-807-fix-thing", DEFAULT_BRANCH_TICKET_REGEX)
+                .unwrap(),
+            "COMMON-807"
+        );
+    }
+
+    #[test]
+    fn extracts_and_uppercases_lowercase_ticket_from_branch() {
+        assert_eq!(
+            extract_ticket_from_branch("common-807-fix-thing", DEFAULT_BRANCH_TICKET_REGEX)
+                .unwrap(),
+            "COMMON-807"
+        );
+    }
+
+    #[test]
+    fn fails_when_no_ticket_in_branch() {
+        assert!(extract_ticket_from_branch("main", DEFAULT_BRANCH_TICKET_REGEX).is_err());
+    }
+
+    #[test]
+    fn custom_pattern_is_used_when_non_empty() {
+        assert_eq!(
+            extract_ticket_from_branch("feat/XYZ-42-thing", r"XYZ-\d+").unwrap(),
+            "XYZ-42"
+        );
+    }
 }

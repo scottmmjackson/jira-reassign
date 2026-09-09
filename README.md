@@ -37,6 +37,7 @@ This writes a template to your OS config directory and prints the path. Fill it 
   "email": "you@yourcompany.com",
   "api_token": "your-api-token",
   "account_id": null,
+  "branch_ticket_regex": null,
   "fields": {
     "reviewer": "customfield_10000",
     "responsible-engineer": "customfield_10001"
@@ -61,6 +62,15 @@ This writes a template to your OS config directory and prints the path. Fill it 
   current holder. Run `jira-reassign list-fields` (optionally with a project key) to find field
   IDs. You can add as many roles as you like — each becomes usable as
   `jira-reassign <role> <ticket>` immediately, no code changes required.
+- `branch_ticket_regex` is optional and off by default: leave it `null` (or omit it) and you
+  must always pass `<ticket>` explicitly. Set it to enable extracting the ticket ID from your
+  current git branch name instead, so `jira-reassign reviewer`, `jira-reassign show`, and
+  `jira-reassign assign-me` all work with the ticket omitted:
+  - `""` (empty string) enables the feature using a sane default pattern — it matches a
+    Jira-style key (letters, then digits) anywhere in the branch name, case-insensitively, e.g.
+    `feature/COMMON-807-fix-thing` or `common-807-fix-thing` both resolve to `COMMON-807`.
+  - Any non-empty string is used as a custom regex instead. The first capture group is used as
+    the ticket ID (or the whole match, if the regex has no capture group).
 
 ## Usage
 
@@ -79,6 +89,12 @@ jira-reassign assign-me COMMON-807
 
 # Show the ticket's assignee, and who holds each configured role
 jira-reassign show COMMON-807
+
+# With "branch_ticket_regex" configured, <ticket> can be omitted and is extracted from
+# the current git branch name instead, e.g. on branch "feature/COMMON-807-fix-thing":
+jira-reassign reviewer
+jira-reassign show
+jira-reassign assign-me
 
 # List all fields visible on the Jira site
 jira-reassign list-fields
