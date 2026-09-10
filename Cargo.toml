@@ -1,7 +1,7 @@
 [package]
 name = "jira-reassign"
 authors = ["Scott Jackson <me@scottmmjackson.com>"]
-version = "0.1.0"
+version = "0.1.1"
 description = "Reassign Jira tickets by role field (reviewer, responsible engineer, etc.)"
 edition = "2024"
 
